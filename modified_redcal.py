@@ -18,7 +18,6 @@ from hera_cal.apply_cal import calibrate_in_place
 
 ## Importing functions
 from hera_cal.redcal import _get_pol_load_list
-from hera_cal.redcal import get_reds
 from hera_cal.redcal import filter_reds
 from hera_cal.redcal import redundantly_calibrate
 from hera_cal.redcal import expand_omni_sol
@@ -37,13 +36,13 @@ SEC_PER_DAY = 86400.
 IDEALIZED_BL_TOL = 1e-8  # bl_error_tol for redcal.get_reds when using antenna positions calculated from reds
 
 
-def get_reds(antpos, pols=['nn'], pol_mode='1pol', bl_error_tol=1.0, include_autos=False):
+def get_reds_origin(antpos, pols=['nn'], pol_mode='1pol', bl_error_tol=1.0, include_autos=False):
     pos_reds = get_pos_reds(antpos, bl_error_tol=bl_error_tol, include_autos=include_autos)
     
     return add_pol_reds(pos_reds, pols=pols, pol_mode=pol_mode)
 
 
-def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', 
+def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', 
                     bl_error_tol=1.0, ex_ants=[], solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0,
                     fc_conv_crit=1e-6, fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, 
                     check_after=50, gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
@@ -65,7 +64,7 @@ def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to
     else:
         raise ValueError('Unrecognized pol_mode: {}'.format(pol_mode))
 
-    reds_all = get_reds({ant: data_file.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+    reds_all = get_reds_origin({ant: data_file.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
                             pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
     
 
@@ -176,9 +175,9 @@ def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to
             ant_pair_cluster1 =[]
             for i in antpp_c[j]:
                 #Print baselines with the antenna numbers that makeup that baseline
-                aa=np.int64(data_file.baseline_to_antnums(i)[0]), np.int64(data_file.baseline_to_antnums(i)[1]),'ee'
+                ant_pair_pol=np.int64(data_file.baseline_to_antnums(i)[0]), np.int64(data_file.baseline_to_antnums(i)[1]),'ee'
                 
-                ant_pair_cluster1.append(aa)
+                ant_pair_cluster1.append(ant_pair_pol)
             reds_all_cluster.append(ant_pair_cluster1)
             
         clustered_baseline_groups.append(reds_all_cluster) ## Contains clustered baselines
@@ -220,7 +219,7 @@ def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to
     rv['chisq_per_ant'] = {ant: np.zeros((nTimes, nFreqs), dtype=np.float32) for ant in ants}
 
     # get reds and then intitialize omnical visibility solutions to all 1s and all flagged
-    rd = get_reds({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+    rd = get_reds_origin({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
                         pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
     
 
