@@ -36,16 +36,35 @@ SEC_PER_DAY = 86400.
 IDEALIZED_BL_TOL = 1e-8  # bl_error_tol for redcal.get_reds when using antenna positions calculated from reds
 
 
-def get_reds_origin(antpos, pols=['nn'], pol_mode='1pol', bl_error_tol=1.0, include_autos=False):
+def get_reds(antpos, pols=['nn'], pol_mode='1pol', bl_error_tol=1.0, include_autos=False):
     pos_reds = get_pos_reds(antpos, bl_error_tol=bl_error_tol, include_autos=include_autos)
     
     return add_pol_reds(pos_reds, pols=pols, pol_mode=pol_mode)
 
 
-def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', 
+def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', 
                     bl_error_tol=1.0, ex_ants=[], solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0,
                     fc_conv_crit=1e-6, fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, 
                     check_after=50, gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
+    
+    """ Combines the clustered baselines groups with the original get_reds groups and also changes their
+        polarisation of the groups from 'nn' to 'ee'.
+        
+    Arguments:
+        hd: HERAData object, instantiated with the datafile or files to calibrate. Must be loaded using uvh5.
+            Assumed to have no prior flags.
+        data_file: HERAData object,that has been calibrated by redcal.
+        Number_of_clusters: The number of clusters you want to cluster the redundant baseline group into.
+        red_groups_index: The number of redundant groups to use for the clustering.
+        
+        
+    Returns:
+        reds: list of lists of redundant baseline tuples, e.g. (ind1,ind2,pol).
+            Each list has a list of baselines that are clustered into the same group by the 
+            clustering algorithm.
+    """
+    
+    
     
     ant_nums = np.unique(np.append(data_file.ant_1_array, data_file.ant_2_array))
     pols=['nn']
@@ -64,7 +83,7 @@ def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=N
     else:
         raise ValueError('Unrecognized pol_mode: {}'.format(pol_mode))
 
-    reds_all = get_reds_origin({ant: data_file.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+    reds_all = get_reds({ant: data_file.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
                             pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
     
 
@@ -126,11 +145,12 @@ def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=N
         y = n
         # Incorrect number of clusters
         true_labels = KMeans(n_clusters=Number_of_clusters).fit_predict(X)
-
+        
+        cluster_baselines2 = [n, true_labels] # Storing clustered baselines and their labels
+        
         ############################  'cluster_baselines2 complete' ######################################
         ##################################################################################################
         
-        cluster_baselines2 = [n, true_labels] # Storing clustered baselines and their labels
 
         """ It uses the labels we get when we run the clustering algorithm, to get the index of each label
                 in order to find out which label belongs to which baseline. 
@@ -183,15 +203,7 @@ def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=N
         clustered_baseline_groups.append(reds_all_cluster) ## Contains clustered baselines
         ################################  'get_custom_reds complete' #######################################
         ####################################################################################################
-        
-    """ Combines the clustered baselines groups with the original get_reds groups and also changes their
-        polarisation of the groups from 'nn' to 'ee'.
 
-    Returns:
-        reds: list of lists of redundant baseline tuples, e.g. (ind1,ind2,pol).
-            Each list has a list of baselines that are clustered into the same group by the 
-            clustering algorithm.
-    """
     if nInt_to_load is not None:
         assert hd.filetype == 'uvh5', 'Partial loading only available for uvh5 filetype.'
     else:
@@ -219,7 +231,7 @@ def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=N
     rv['chisq_per_ant'] = {ant: np.zeros((nTimes, nFreqs), dtype=np.float32) for ant in ants}
 
     # get reds and then intitialize omnical visibility solutions to all 1s and all flagged
-    rd = get_reds_origin({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+    rd = get_reds({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
                         pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
     
 
