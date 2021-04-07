@@ -235,11 +235,3 @@ def get_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=N
         all_reds.append(rd[k3])
 
     return all_reds   
-
-
-
-
-
-
-
-
