@@ -1,5 +1,5 @@
 
-
+## FUNCTIONS
 
 def get_rbg_cluster(data_file, Number_of_clusters, red_groups_index):
     
