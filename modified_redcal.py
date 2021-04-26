@@ -221,29 +221,17 @@ def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to
     ants = [(ant, antpol) for ant in ant_nums for antpol in antpols]
     pol_load_list = _get_pol_load_list(hd.pols, pol_mode=pol_mode)
 
-    # initialize gains to 1s, gain flags to True, and chisq to 0s
-    rv = {}  # dictionary of return values
-    rv['g_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
-    rv['gf_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
-    rv['g_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
-    rv['gf_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
-    rv['chisq'] = {antpol: np.zeros((nTimes, nFreqs), dtype=np.float32) for antpol in antpols}
-    rv['chisq_per_ant'] = {ant: np.zeros((nTimes, nFreqs), dtype=np.float32) for ant in ants}
-
-    # get reds and then intitialize omnical visibility solutions to all 1s and all flagged
-    rd = get_reds({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
-                        pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
-    
-
+    reds_all = get_reds({ant: data_file.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+                            pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
     ## Replaces the original redundant groups by its clustered subgroups.
-    all_reds = []
+    all_reds_groups = []
     #appends groups that are clustered
     for k1 in range(len(clustered_baseline_groups)):
         for k2 in range(len(clustered_baseline_groups[k1])):
-            all_reds.append(clustered_baseline_groups[k1][k2])
+            all_reds_groups.append(clustered_baseline_groups[k1][k2])
     
     # Appends the un-clustered groups
-    for k3 in range(len(clustered_baseline_groups),len(rd)):
-        all_reds.append(rd[k3])
+    for k3 in range(len(clustered_baseline_groups),len(reds_all)):
+        all_reds_groups.append(reds_all[k3])
 
-    return all_reds   
+    return all_reds_groups
