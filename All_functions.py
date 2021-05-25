@@ -935,11 +935,7 @@ def calulate_X2_all(true_gains,red_gains_fixed, custom_red_gains_fixed ):
     return X_red_true_tot, X_custom_true_tot
 
 
-
-
-
-
-
+#############################################################################################################################################
 def calulate_X2_sum(true_gains,red_gains_fixed, custom_red_gains_fixed ):
     """ Takes in the gains from calibration to calculate the chi_sq-like statistic. The statistic takes the
         Sum [(gain.real - gain_true.real)^2 + (gain.imag - gain_true.imag)^2] and summing over all times and 
