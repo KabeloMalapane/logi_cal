@@ -235,3 +235,178 @@ def get_custom_reds(hd, data_file, Number_of_clusters, red_groups_index, nInt_to
         all_reds_groups.append(reds_all[k3])
 
     return all_reds_groups
+
+############################################################################################################################################################################################# Running calibration   #####################################################################
+def redcal_iteration_custom2(hd, customized_groups, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
+                     solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
+                     fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
+                     gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
+    '''Perform redundant calibration (firstcal, logcal, and omnical) an entire HERAData object, loading only
+    nInt_to_load integrations at a time and skipping and flagging times when the sun is above solar_horizon.
+    Arguments:
+        hd: HERAData object, instantiated with the datafile or files to calibrate. Must be loaded using uvh5.
+            Assumed to have no prior flags.
+        nInt_to_load: number of integrations to load and calibrate simultaneously. Default None loads all integrations.
+            Partial io requires 'uvh5' filetype for hd. Lower numbers save memory, but incur a CPU overhead.
+        pol_mode: polarization mode of redundancies. Can be '1pol', '2pol', '4pol', or '4pol_minV'.
+            See recal.get_reds for more information.
+        bl_error_tol: the largest allowable difference between baselines in a redundant group
+            (in the same units as antpos). Normally, this is up to 4x the largest antenna position error.
+        ex_ants: list of antennas to exclude from calibration and flag. Can be either antenna numbers or
+            antenna-polarization tuples. In the former case, all pols for an antenna will be excluded.
+        solar_horizon: float, Solar altitude flagging threshold [degrees]. When the Sun is above
+            this altitude, calibration is skipped and the integrations are flagged.
+        flag_nchan_low: integer number of channels at the low frequency end of the band to always flag (default 0)
+        flag_nchan_high: integer number of channels at the high frequency end of the band to always flag (default 0)
+        fc_conv_crit: maximum allowed changed in firstcal phases for convergence
+        fc_maxiter: maximum number of firstcal iterations allowed for finding per-antenna phases
+        oc_conv_crit: maximum allowed relative change in omnical solutions for convergence
+        oc_maxiter: maximum number of omnical iterations allowed before it gives up
+        check_every: compute omnical convergence every Nth iteration (saves computation).
+        check_after: start computing omnical convergence only after N iterations (saves computation).
+        gain: The fractional step made toward the new solution each omnical iteration. Values in the
+            range 0.1 to 0.5 are generally safe. Increasing values trade speed for stability.
+        max_dims: maximum allowed generalized tip/tilt phase degeneracies of redcal that are fixed
+            with remove_degen() and must be later abscaled. None is no limit. 2 is a classically
+            "redundantly calibratable" planar array.  More than 2 usually arises with subarrays of
+            redundant baselines. Antennas will be excluded from reds to satisfy this.
+        verbose: print calibration progress updates
+        filter_reds_kwargs: additional filters for the redundancies (see redcal.filter_reds for documentation)
+    Returns a dictionary of results with the following keywords:
+        'g_firstcal': firstcal gains in dictionary keyed by ant-pol tuples like (1,'Jnn').
+            Gains are Ntimes x Nfreqs gains but fully described by a per-antenna delay.
+        'gf_firstcal': firstcal gain flags in the same format as 'g_firstcal'. Will be all False.
+        'g_omnical': full omnical gain dictionary (which include firstcal gains) in the same format.
+            Flagged gains will be 1.0s.
+        'gf_omnical': omnical flag dictionary in the same format. Flags arise from NaNs in log/omnical.
+        'v_omnical': omnical visibility solutions dictionary with baseline-pol tuple keys that are the
+            first elements in each of the sub-lists of reds. Flagged visibilities will be 0.0s.
+        'vf_omnical': omnical visibility flag dictionary in the same format. Flags arise from NaNs.
+        'vns_omnical': omnical visibility nsample dictionary that counts the number of unflagged redundancies.
+        'chisq': chi^2 per degree of freedom for the omnical solution. Normalized using noise derived
+            from autocorrelations. If the inferred pol_mode from reds (see redcal.parse_pol_mode) is
+            '1pol' or '2pol', this is a dictionary mapping antenna polarization (e.g. 'Jnn') to chi^2.
+            Otherwise, there is a single chisq (because polarizations mix) and this is a numpy array.
+        'chisq_per_ant': dictionary mapping ant-pol tuples like (1,'Jnn') to the average chisq
+            for all visibilities that an antenna participates in.
+        'fc_meta' : dictionary that includes delays and identifies flipped antennas
+        'omni_meta': dictionary of information about the omnical convergence and chi^2 of the solution
+    '''
+    if nInt_to_load is not None:
+        assert hd.filetype == 'uvh5', 'Partial loading only available for uvh5 filetype.'
+    else:
+        if hd.data_array is None:  # if data loading hasn't happened yet, load the whole file
+            hd.read()
+        if hd.times is None:  # load metadata into HERAData object if necessary
+            for key, value in hd.get_metadata_dict().items():
+                setattr(hd, key, value)
+
+    # get basic antenna, polarization, and observation info
+    nTimes, nFreqs = len(hd.times), len(hd.freqs)
+    fSlice = slice(flag_nchan_low, nFreqs - flag_nchan_high)
+    antpols = list(set([ap for pol in hd.pols for ap in split_pol(pol)]))
+    ant_nums = np.unique(np.append(hd.ant_1_array, hd.ant_2_array))
+    ants = [(ant, antpol) for ant in ant_nums for antpol in antpols]
+    pol_load_list = _get_pol_load_list(hd.pols, pol_mode=pol_mode)
+
+    # initialize gains to 1s, gain flags to True, and chisq to 0s
+    rv = {}  # dictionary of return values
+    rv['g_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
+    rv['gf_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
+    rv['g_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
+    rv['gf_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
+    rv['chisq'] = {antpol: np.zeros((nTimes, nFreqs), dtype=np.float32) for antpol in antpols}
+    rv['chisq_per_ant'] = {ant: np.zeros((nTimes, nFreqs), dtype=np.float32) for ant in ants}
+
+#    get reds and then intitialize omnical visibility solutions to all 1s and all flagged
+
+    all_reds = customized_groups
+    
+    rv['v_omnical'] = DataContainer({red[0]: np.ones((nTimes, nFreqs), dtype=np.complex64) for red in all_reds})
+    rv['vf_omnical'] = DataContainer({red[0]: np.ones((nTimes, nFreqs), dtype=bool) for red in all_reds})
+    rv['vns_omnical'] = DataContainer({red[0]: np.zeros((nTimes, nFreqs), dtype=np.float32) for red in all_reds})
+    filtered_reds = filter_reds(all_reds, ex_ants=ex_ants, antpos=hd.antpos, **filter_reds_kwargs)
+    
+    # setup metadata dictionaries
+    rv['fc_meta'] = {'dlys': {ant: np.full(nTimes, np.nan) for ant in ants}}
+    rv['fc_meta']['polarity_flips'] = {ant: np.full(nTimes, np.nan) for ant in ants}
+    rv['omni_meta'] = {'chisq': {str(pols): np.zeros((nTimes, nFreqs), dtype=float) for pols in pol_load_list}}
+    rv['omni_meta']['iter'] = {str(pols): np.zeros((nTimes, nFreqs), dtype=int) for pols in pol_load_list}
+    rv['omni_meta']['conv_crit'] = {str(pols): np.zeros((nTimes, nFreqs), dtype=float) for pols in pol_load_list}
+
+    # solar flagging
+    lat, lon, alt = hd.telescope_location_lat_lon_alt_degrees
+    solar_alts = utils.get_sun_alt(hd.times, latitude=lat, longitude=lon)
+    solar_flagged = solar_alts > solar_horizon
+    if verbose and np.any(solar_flagged):
+        print(len(hd.times[solar_flagged]), 'integrations flagged due to sun above', solar_horizon, 'degrees.')
+
+    # loop over polarizations and times, performing partial loading if desired
+    for pols in pol_load_list:
+        if verbose:
+            print('Now calibrating', pols, 'polarization(s)...')
+        reds = filter_reds(filtered_reds, ex_ants=ex_ants, pols=pols)
+        if nInt_to_load is not None:  # split up the integrations to load nInt_to_load at a time
+            tind_groups = np.split(np.arange(nTimes)[~solar_flagged],
+                                   np.arange(nInt_to_load, len(hd.times[~solar_flagged]), nInt_to_load))
+        else:
+            tind_groups = [np.arange(nTimes)[~solar_flagged]]  # just load a single group
+        for tinds in tind_groups:
+            if len(tinds) > 0:
+                if verbose:
+                    print('    Now calibrating times', hd.times[tinds[0]], 'through', hd.times[tinds[-1]], '...')
+                if nInt_to_load is None:  # don't perform partial I/O
+                    data, _, nsamples = hd.build_datacontainers()  # this may contain unused polarizations, but that's OK
+                    for bl in data:
+                        data[bl] = data[bl][tinds, fSlice]  # cut down size of DataContainers to match unflagged indices
+                        nsamples[bl] = nsamples[bl][tinds, fSlice]
+                else:  # perform partial i/o
+                    data, _, nsamples = hd.read(times=hd.times[tinds], frequencies=hd.freqs[fSlice], polarizations=pols)
+                cal = redundantly_calibrate(data, reds, freqs=hd.freqs[fSlice], times_by_bl=hd.times_by_bl,
+                                            fc_conv_crit=fc_conv_crit, fc_maxiter=fc_maxiter,
+                                            oc_conv_crit=oc_conv_crit, oc_maxiter=oc_maxiter,
+                                            check_every=check_every, check_after=check_after, max_dims=max_dims, gain=gain)
+                expand_omni_sol(cal, filter_reds(all_reds, pols=pols), data, nsamples)
+
+                # gather results
+                for ant in cal['g_omnical'].keys():
+                    rv['g_firstcal'][ant][tinds, fSlice] = cal['g_firstcal'][ant]
+                    rv['gf_firstcal'][ant][tinds, fSlice] = cal['gf_firstcal'][ant]
+                    rv['g_omnical'][ant][tinds, fSlice] = cal['g_omnical'][ant]
+                    rv['gf_omnical'][ant][tinds, fSlice] = cal['gf_omnical'][ant]
+                    rv['chisq_per_ant'][ant][tinds, fSlice] = cal['chisq_per_ant'][ant]
+                for ant in cal['fc_meta']['dlys'].keys():
+                    rv['fc_meta']['dlys'][ant][tinds] = cal['fc_meta']['dlys'][ant]
+                    rv['fc_meta']['polarity_flips'][ant][tinds] = cal['fc_meta']['polarity_flips'][ant]
+                for bl in cal['v_omnical'].keys():
+                    rv['v_omnical'][bl][tinds, fSlice] = cal['v_omnical'][bl]
+                    rv['vf_omnical'][bl][tinds, fSlice] = cal['vf_omnical'][bl]
+                    rv['vns_omnical'][bl][tinds, fSlice] = cal['vns_omnical'][bl]
+                if pol_mode in ['1pol', '2pol']:
+                    for antpol in cal['chisq'].keys():
+                        rv['chisq'][antpol][tinds, fSlice] = cal['chisq'][antpol]
+                else:  # duplicate chi^2 into both antenna polarizations
+                    for antpol in rv['chisq'].keys():
+                        rv['chisq'][antpol][tinds, fSlice] = cal['chisq']
+                rv['omni_meta']['chisq'][str(pols)][tinds, fSlice] = cal['omni_meta']['chisq']
+                rv['omni_meta']['iter'][str(pols)][tinds, fSlice] = cal['omni_meta']['iter']
+                rv['omni_meta']['conv_crit'][str(pols)][tinds, fSlice] = cal['omni_meta']['conv_crit']
+    
+    print('redcal_iteration_custom2 Complete')
+    return rv
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
