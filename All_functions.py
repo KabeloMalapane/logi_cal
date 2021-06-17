@@ -23,6 +23,8 @@ from hera_cal import version
 from hera_cal.noise import predict_noise_variance_from_autos
 from hera_cal.datacontainer import DataContainer
 from hera_cal.utils import split_pol, conj_pol, split_bl, reverse_bl, join_bl, join_pol, comply_pol
+from hera_qm.ant_metrics import per_antenna_modified_z_scores
+from hera_cal.redcal import _redcal_run_write_results
 from hera_cal.io import HERAData, HERACal, write_cal, save_redcal_meta
 from hera_cal.apply_cal import calibrate_in_place
 
@@ -385,7 +387,7 @@ def custom_reds2(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_lo
 
 
 
-def redcal_iteration_custom2(hd, customized_groups, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
+def redcal_iteration_custom2(hd, customized_groups,min_bl_cut,max_bl_cut, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
                      solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
                      fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
                      gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
@@ -477,8 +479,9 @@ def redcal_iteration_custom2(hd, customized_groups, nInt_to_load=None, pol_mode=
     rv['v_omnical'] = DataContainer({red[0]: np.ones((nTimes, nFreqs), dtype=np.complex64) for red in all_reds})
     rv['vf_omnical'] = DataContainer({red[0]: np.ones((nTimes, nFreqs), dtype=bool) for red in all_reds})
     rv['vns_omnical'] = DataContainer({red[0]: np.zeros((nTimes, nFreqs), dtype=np.float32) for red in all_reds})
-    filtered_reds = filter_reds(all_reds, ex_ants=ex_ants, antpos=hd.antpos, **filter_reds_kwargs)
+    filtered_reds = filter_reds(all_reds, ex_ants=ex_ants, antpos=hd.antpos,min_bl_cut=min_bl_cut,max_bl_cut=max_bl_cut, **filter_reds_kwargs)
 
+    
     # setup metadata dictionaries
     rv['fc_meta'] = {'dlys': {ant: np.full(nTimes, np.nan) for ant in ants}}
     rv['fc_meta']['polarity_flips'] = {ant: np.full(nTimes, np.nan) for ant in ants}
@@ -546,6 +549,157 @@ def redcal_iteration_custom2(hd, customized_groups, nInt_to_load=None, pol_mode=
     
     print('redcal_iteration_custom2 Complete')
     return rv
+
+
+
+def redcal_run_custom(input_data,c_data,k_value,N_red_clusters,min_bl_cut, max_bl_cut, filetype='uvh5', firstcal_ext='.first.calfits', omnical_ext='.omni.calfits',
+               omnivis_ext='.omni_vis.uvh5', meta_ext='.redcal_meta.hdf5', iter0_prefix='', outdir=None,
+               metrics_files=[], a_priori_ex_ants_yaml=None, clobber=False, nInt_to_load=None, pol_mode='2pol',
+               bl_error_tol=1.0, ex_ants=[], ant_z_thresh=4.0, max_rerun=5, solar_horizon=0.0,
+               flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6, fc_maxiter=50,
+               oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50, gain=.4, add_to_history='',
+               max_dims=2, verbose=False, **filter_reds_kwargs):
+    '''Perform redundant calibration (firstcal, logcal, and omnical) an uvh5 data file, saving firstcal and omnical
+    results to calfits and uvh5. Uses partial io if desired, performs solar flagging, and iteratively removes antennas
+    with high chi^2, rerunning calibration as necessary.
+    Arguments:
+        input_data: path to visibility data file to calibrate or HERAData object
+        filetype: filetype of input_data (if it's a path). Supports 'uvh5' (defualt), 'miriad', 'uvfits'
+        firstcal_ext: string to replace file extension of input_data for saving firstcal calfits
+        omnical_ext: string to replace file extension of input_data for saving omnical calfits
+        omnivis_ext: string to replace file extension of input_data for saving omnical visibilities as uvh5
+        meta_ext: string to replace file extension of input_data for saving metadata as hdf5
+        iter0_prefix: if not '', save the omnical results with this prefix appended to each file after the 0th
+            iteration, but only if redcal has found any antennas to exclude and re-run without
+        outdir: folder to save data products. If None, will be the same as the folder containing input_data
+        metrics_files: path or list of paths to file(s) containing ant_metrics or auto_metrics readable by 
+            hera_qm.metrics_io.load_metric_file. Used for finding ex_ants and is combined with antennas
+            excluded via ex_ants.
+        a_priori_ex_ants_yaml : path to YAML with antenna flagging information parsable by
+            hera_qm.metrics_io.read_a_priori_ant_flags(). Frequency and time flags in the YAML
+            are ignored. Flags are combined with ant_metrics's xants and ex_ants. If any
+            polarization is flagged for an antenna, all polarizations are flagged.
+        clobber: if True, overwrites existing files for the firstcal and omnical results
+        nInt_to_load: number of integrations to load and calibrate simultaneously. Default None loads all integrations.
+            Partial io requires 'uvh5' filetype. Lower numbers save memory, but incur a CPU overhead.
+        pol_mode: polarization mode of redundancies. Can be '1pol', '2pol', '4pol', or '4pol_minV'.
+            See recal.get_reds for more information.
+        bl_error_tol: the largest allowable difference between baselines in a redundant group
+            (in the same units as antpos). Normally, this is up to 4x the largest antenna position error.
+        ex_ants: list of antennas to exclude from calibration and flag. Can be either antenna numbers or
+            antenna-polarization tuples. In the former case, all pols for an antenna will be excluded.
+        ant_z_thresh: threshold of modified z-score (like number of sigmas but with medians) for chi^2 per
+            antenna above which antennas are thrown away and calibration is re-run iteratively. Z-scores are
+            computed independently for each antenna polarization, but either polarization being excluded
+            triggers the entire antenna to get flagged (when multiple polarizations are calibrated)
+        max_rerun: maximum number of times to run redundant calibration
+        solar_horizon: float, Solar altitude flagging threshold [degrees]. When the Sun is above
+            this altitude, calibration is skipped and the integrations are flagged.
+        flag_nchan_low: integer number of channels at the low frequency end of the band to always flag (default 0)
+        flag_nchan_high: integer number of channels at the high frequency end of the band to always flag (default 0)
+        fc_conv_crit: maximum allowed changed in firstcal phases for convergence
+        fc_maxiter: maximum number of firstcal iterations allowed for finding per-antenna phases
+        oc_conv_crit: maximum allowed relative change in omnical solutions for convergence
+        oc_maxiter: maximum number of omnical iterations allowed before it gives up
+        check_every: compute omnical convergence every Nth iteration (saves computation).
+        check_after: start computing omnical convergence only after N iterations (saves computation).
+        gain: The fractional step made toward the new solution each omnical iteration. Values in the
+            range 0.1 to 0.5 are generally safe. Increasing values trade speed for stability.
+        max_dims: maximum allowed generalized tip/tilt phase degeneracies of redcal that are fixed
+            with remove_degen() and must be later abscaled. None is no limit. 2 is a classically
+            "redundantly calibratable" planar array.  More than 2 usually arises with subarrays of
+            redundant baselines. Antennas will be excluded from reds to satisfy this.
+        add_to_history: string to add to history of output firstcal and omnical files
+        verbose: print calibration progress updates
+        filter_reds_kwargs: additional filters for the redundancies (see redcal.filter_reds for documentation)
+    Returns:
+        cal: the dictionary result of the final run of redcal_iteration (see above for details)
+    '''
+    if isinstance(input_data, str):
+        hd = HERAData(input_data, filetype=filetype)
+        if filetype != 'uvh5' or nInt_to_load is None:
+            hd.read()
+
+    elif isinstance(input_data, HERAData):
+        hd = input_data
+        input_data = hd.filepaths[0]
+    else:
+        raise TypeError('input_data must be a single string path to a visibility data file or a HERAData object')
+
+    # parse ex_ants from function, metrics_files, and apriori yamls
+    ex_ants = set(ex_ants)
+    if metrics_files is not None:
+        if isinstance(metrics_files, str):
+            metrics_files = [metrics_files]
+        if len(metrics_files) > 0:
+            from hera_qm.metrics_io import load_metric_file
+            for mf in metrics_files:
+                metrics = load_metric_file(mf)
+                # load from an ant_metrics file
+                if 'xants' in metrics:
+                    for ant in metrics['xants']:
+                        ex_ants.add(ant[0])  # Just take the antenna number, flagging both polarizations
+                # load from an auto_metrics file
+                elif 'ex_ants' in metrics and 'r2_ex_ants' in metrics['ex_ants']:
+                    for ant in metrics['ex_ants']['r2_ex_ants']:
+                        ex_ants.add(ant)  # Auto metrics reports just antenna numbers
+    if a_priori_ex_ants_yaml is not None:
+        from hera_qm.metrics_io import read_a_priori_ant_flags
+        ex_ants = ex_ants.union(set(read_a_priori_ant_flags(a_priori_ex_ants_yaml, ant_indices_only=True)))
+    high_z_ant_hist = ''
+
+    # setup output
+    filename_no_ext = os.path.splitext(os.path.basename(input_data))[0]
+    if outdir is None:
+        outdir = os.path.dirname(input_data)
+
+    # loop over calibration, removing bad antennas and re-running if necessary
+    run_number = 0
+    while True:
+        # Run redundant calibration
+        if verbose:
+            print('\nNow running redundant calibration without antennas', list(ex_ants), '...')
+            
+        N_red_clusters = N_red_clusters
+        k_value = k_value
+        #Running Logi_Cal 
+        customized_groups = custom_reds2(hd,c_data,k_value,N_red_clusters)
+        custom_red_gains = redcal_iteration_custom2(hd,customized_groups,min_bl_cut,max_bl_cut)
+        cal = custom_red_gains
+
+        # Determine whether to add additional antennas to exclude
+        z_scores = per_antenna_modified_z_scores({ant: np.nanmedian(cspa) for ant, cspa in cal['chisq_per_ant'].items()
+                                                  if (ant[0] not in ex_ants) and not np.all(cspa == 0)})
+        n_ex = len(ex_ants)
+        for ant, score in z_scores.items():
+            if (score >= ant_z_thresh):
+                ex_ants.add(ant[0])
+                bad_ant_str = 'Throwing out antenna ' + str(ant[0]) + ' for a z-score of ' + str(score) + ' on polarization ' + str(ant[1]) + '.\n'
+                high_z_ant_hist += bad_ant_str
+                if verbose:
+                    print(bad_ant_str)
+        run_number += 1
+        if len(ex_ants) == n_ex or run_number >= max_rerun:
+            break
+        # If there is going to be a re-run and if iter0_prefix is not the empty string, then save the iter0 results.
+        if run_number == 1 and len(iter0_prefix) > 0:
+            _redcal_run_write_results(cal, hd, filename_no_ext + iter0_prefix + firstcal_ext, filename_no_ext + iter0_prefix + omnical_ext,
+                                      filename_no_ext + iter0_prefix + omnivis_ext, filename_no_ext + iter0_prefix + meta_ext, outdir,
+                                      clobber=clobber, verbose=verbose, add_to_history=add_to_history + '\n' + 'Iteration 0 Results.\n')
+
+    # output results files
+    _redcal_run_write_results(cal, hd, filename_no_ext + firstcal_ext, filename_no_ext + omnical_ext,
+                              filename_no_ext + omnivis_ext, filename_no_ext + meta_ext, outdir, clobber=clobber,
+                              verbose=verbose, add_to_history=add_to_history + '\n' + high_z_ant_hist)
+
+    return cal
+
+
+
+
+
+
+
 
 
 
@@ -982,6 +1136,124 @@ def calulate_X2_sum(true_gains,red_gains_fixed, custom_red_gains_fixed ):
 
 
 
+def get_statistics_visibility(true_file, calib_data,rbg_index):
+    """
+        Use statistical methods to compare similarities in visibility solutions between the what is known (true data), Redcal (the original
+        redundant calibration code) and Logi_cal (the modified redcal). 
+
+        Parameters
+        ----------
+        true_file: HERAData object, data file containing visibility real or true solutions. Must be loaded using uvh5.
+            Assumed to have no prior flags..
+
+        calib_file : hera_cal.io.HERAData container already opened using UVcal. For more information on how to open the file refer
+            to 'Save_Load_data.py'.
+
+        rbg_index : int
+            Specify the redundant baseline group needed to calculate the statistics from.
+                max_value = len(red_base[0])
+                
+        Statistical Methods
+        ----------- -------
+        dh: The directed Hausdorff distance
+        df: Discrete Fréchet distance
+        dtw: Dynamic Time Warping (DTW)
+        pcm: Partial Curve Mapping (PCM)
+        area: Area between two curves 
+        cl: A Curve-Length distance metric (uses arc length distance from beginning to end)
+
+        Returns
+        -------
+        An array of statistical values of each method for each baseline in a redundant baseline group.
+            NB.The closer to ZERO these values are, the more similar the two data files are in comparison.
+        """
+    
+    red_base = true_file.get_redundancies(tol=1.0, use_antpos=False, include_conjugates=False,include_autos=True,
+                               conjugate_bls=False)
+    rbg = red_base[0][rbg_index]  
+    rbg = np.array(rbg)     ## Saving a list of redundant baselines in an array.
+    
+    stat_values = []
+    #original_stat = []
+    for i in range(len(rbg)):
+        y1 = np.abs(calib_data.get_data(rbg[i])[0] )
+        y2 = np.abs(true_file.get_data(rbg[i])[0] )
+        x = np.arange(len(y1))
+
+        P = np.array([x, y1]).T
+        Q = np.array([x, y2]).T
+
+        dh, ind1, ind2 = directed_hausdorff(P, Q)
+        df = similaritymeasures.frechet_dist(P, Q)
+        dtw, d = similaritymeasures.dtw(P, Q)
+        pcm = similaritymeasures.pcm(P, Q)
+        area = similaritymeasures.area_between_two_curves(P, Q)
+        cl = similaritymeasures.curve_length_measure(P, Q)
+
+        # all methods will return 0.0 when P and Q are the same
+        stat_values.append([dh, df, dtw, pcm, cl, area])
+
+        #print('{} = '.format( true_data.baseline_to_antnums(rbg[i])), dh, df, dtw, pcm, cl, area)
+    stat_values = np.array(stat_values)     
+    return stat_values
+
+
+
+
+def get_statistics_gains(true_file, calib_data,time_sample):
+    """
+        Use statistical methods to compare similarities in visibility solutions between the what is known (true data), Redcal (the original
+        redundant calibration code) and Logi_cal (the modified redcal). 
+
+        Parameters
+        ----------
+        true_file: true gains
+
+        calib_file : calibrated gains with fixed degeneracies (from RedCal or Logi_Cal)
+
+        time_sample : int
+            Specify the time sample needed to calculate the statistics from.
+                max_value = len(hd.ntimes)
+                
+        Statistical Methods
+        ----------- -------
+        dh: The directed Hausdorff distance
+        df: Discrete Fréchet distance
+        dtw: Dynamic Time Warping (DTW)
+        pcm: Partial Curve Mapping (PCM)
+        area: Area between two curves 
+        cl: A Curve-Length distance metric (uses arc length distance from beginning to end)
+
+        Returns
+        -------
+        An array of statistical values of each method for each antenna.
+            NB.The closer to ZERO these values are, the more similar the two data files are in comparison.
+        """
+    
+    
+    stat_values = []
+    #original_stat = []
+    for i in range(len(true_file)):
+        y1 = np.abs(calib_data[( int('{}'.format(i)) , 'Jee' )][time_sample] )
+        y2 = np.abs(true_file[( int('{}'.format(i)) , 'Jee' )][time_sample] )
+        x = np.arange(len(y1))
+
+        P = np.array([x, y1]).T
+        Q = np.array([x, y2]).T
+
+        dh, ind1, ind2 = directed_hausdorff(P, Q)
+        df = similaritymeasures.frechet_dist(P, Q)
+        dtw, d = similaritymeasures.dtw(P, Q)
+        pcm = similaritymeasures.pcm(P, Q)
+        area = similaritymeasures.area_between_two_curves(P, Q)
+        cl = similaritymeasures.curve_length_measure(P, Q)
+
+        # all methods will return 0.0 when P and Q are the same
+        stat_values.append([dh, df, dtw, pcm, cl, area])
+
+        #print('{} = '.format( true_data.baseline_to_antnums(rbg[i])), dh, df, dtw, pcm, cl, area)
+    stat_values = np.array(stat_values)   
+    return stat_values
 
 
 
