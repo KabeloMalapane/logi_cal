@@ -390,7 +390,7 @@ def custom_reds2(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_lo
 ########################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
 
 
-def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
+def custom_reds_option2(hd, data_file, k_value_start, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
                      solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
                      fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
                      gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
@@ -442,13 +442,13 @@ def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nIn
     RBG = red_groups_index
 
     ## Save k-values in a list to be used in the calibration process
-    k_v_list = np.arange(2,Number_of_clusters+1)
+    k_v_list = np.arange(k_value_start ,Number_of_clusters+1)
     k_v_list = list(k_v_list)
     ## reverse the k-values so that ealier RBGs get higher k-values and later RBGs get lower k-values e.g.RBG = [0,10],k=5 and RBG = [10,20],k=4  
     k_v_list.sort(reverse=True)  
 
     ## Get a list of Redundant baseline groups to be used as ranges based on the overall k-value used.
-    array1 = np.linspace(RBG/(Number_of_clusters-1), RBG, Number_of_clusters-1)
+    array1 = np.linspace(RBG/(len(k_v_list)), RBG , len(k_v_list))
 
     RBG_range = [int(x) for x in array1]
     RBG_range.append(0)
@@ -457,7 +457,7 @@ def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nIn
     
     for rbg in range(len(RBG_range)-1):
         for z in range(RBG_range[rbg],RBG_range[rbg+1]):
-#             print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
+            print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
             clustered_baseline_groups.append(get_custom_reds2(data_file,k_v_list[rbg] ,z))
 
 
@@ -480,7 +480,7 @@ def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nIn
 
 
 
-def custom_reds_option3(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
+def custom_reds_option3(hd, data_file, k_value_start, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
                      solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
                      fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
                      gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
@@ -528,7 +528,7 @@ def custom_reds_option3(hd, data_file, Number_of_clusters, red_groups_index, nIn
     
     clustered_baseline_groups = []
     
-    k_values = np.arange(2,Number_of_clusters+1)
+    k_values = np.arange(k_value_start,Number_of_clusters+1)
     k_values_used = []
     
     for z in range(red_groups_index):
