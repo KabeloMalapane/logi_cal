@@ -387,6 +387,193 @@ def custom_reds2(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_lo
 
 
 
+########################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
+
+
+def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
+                     solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
+                     fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
+                     gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
+    
+        
+    """ Combines the clustered baselines groups with the original get_reds groups and also changes their polarisation
+        of the groups from 'nn' to 'ee'.
+
+    Returns:
+        reds: list of lists of redundant baseline tuples, e.g. (ind1,ind2,pol).
+            Each list has a list of baselines that are clustered into the same group by the 
+            clustering algorithm.
+    """
+    if nInt_to_load is not None:
+        assert hd.filetype == 'uvh5', 'Partial loading only available for uvh5 filetype.'
+    else:
+        if hd.data_array is None:  # if data loading hasn't happened yet, load the whole file
+            hd.read()
+        if hd.times is None:  # load metadata into HERAData object if necessary
+            for key, value in hd.get_metadata_dict().items():
+                setattr(hd, key, value)
+
+    # get basic antenna, polarization, and observation info
+    nTimes, nFreqs = len(hd.times), len(hd.freqs)
+    fSlice = slice(flag_nchan_low, nFreqs - flag_nchan_high)
+    antpols = list(set([ap for pol in hd.pols for ap in split_pol(pol)]))
+    ant_nums = np.unique(np.append(hd.ant_1_array, hd.ant_2_array))
+    ants = [(ant, antpol) for ant in ant_nums for antpol in antpols]
+    pol_load_list = _get_pol_load_list(hd.pols, pol_mode=pol_mode)
+
+    # initialize gains to 1s, gain flags to True, and chisq to 0s
+    rv = {}  # dictionary of return values
+    rv['g_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
+    rv['gf_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
+    rv['g_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
+    rv['gf_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
+    rv['chisq'] = {antpol: np.zeros((nTimes, nFreqs), dtype=np.float32) for antpol in antpols}
+    rv['chisq_per_ant'] = {ant: np.zeros((nTimes, nFreqs), dtype=np.float32) for ant in ants}
+
+#    get reds and then intitialize omnical visibility solutions to all 1s and all flagged
+    rd = get_reds({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+                        pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
+    
+    
+    clustered_baseline_groups =[]
+    RBG = red_groups_index
+
+    ## Save k-values in a list to be used in the calibration process
+    k_v_list = np.arange(2,Number_of_clusters+1)
+    k_v_list = list(k_v_list)
+    ## reverse the k-values so that ealier RBGs get higher k-values and later RBGs get lower k-values e.g.RBG = [0,10],k=5 and RBG = [10,20],k=4  
+    k_v_list.sort(reverse=True)  
+
+    ## Get a list of Redundant baseline groups to be used as ranges based on the overall k-value used.
+    array1 = np.linspace(RBG/(Number_of_clusters-1), RBG, Number_of_clusters-1)
+
+    RBG_range = [int(x) for x in array1]
+    RBG_range.append(0)
+    RBG_range.sort()
+
+    
+    for rbg in range(len(RBG_range)-1):
+        for z in range(RBG_range[rbg],RBG_range[rbg+1]):
+            print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
+            clustered_baseline_groups.append(get_custom_reds2(data_file,k_v_list[rbg] ,z))
+
+
+    ## Replaces the original redundand groups by its clustered subgroups.
+    all_reds = []
+    #appends groups that are clustered
+    for k1 in range(len(clustered_baseline_groups)):
+        for k2 in range(len(clustered_baseline_groups[k1])):
+            all_reds.append(clustered_baseline_groups[k1][k2])
+    
+    # Appends the un-clustered groups
+    for k3 in range(len(clustered_baseline_groups),len(rd)):
+        all_reds.append(rd[k3])
+    
+
+    return all_reds
+
+####################################################################################################################################################################################################################################################################################################################################################################################################################
+
+
+
+
+def custom_reds_option3(hd, data_file, Number_of_clusters, red_groups_index, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
+                     solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
+                     fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
+                     gain=.4, max_dims=2, verbose=False, **filter_reds_kwargs):
+    
+        
+    """ Combines the clustered baselines groups with the original get_reds groups and also changes their polarisation
+        of the groups from 'nn' to 'ee'.
+        - Clustering all the specified RBGs using a range of random k-values. Every specifies Redundant baseline group is
+        clustered using a random k-value (from a given range).
+
+    Returns:
+        reds: list of lists of redundant baseline tuples, e.g. (ind1,ind2,pol).
+            Each list has a list of baselines that are clustered into the same group by the 
+            clustering algorithm.
+    """
+    if nInt_to_load is not None:
+        assert hd.filetype == 'uvh5', 'Partial loading only available for uvh5 filetype.'
+    else:
+        if hd.data_array is None:  # if data loading hasn't happened yet, load the whole file
+            hd.read()
+        if hd.times is None:  # load metadata into HERAData object if necessary
+            for key, value in hd.get_metadata_dict().items():
+                setattr(hd, key, value)
+
+    # get basic antenna, polarization, and observation info
+    nTimes, nFreqs = len(hd.times), len(hd.freqs)
+    fSlice = slice(flag_nchan_low, nFreqs - flag_nchan_high)
+    antpols = list(set([ap for pol in hd.pols for ap in split_pol(pol)]))
+    ant_nums = np.unique(np.append(hd.ant_1_array, hd.ant_2_array))
+    ants = [(ant, antpol) for ant in ant_nums for antpol in antpols]
+    pol_load_list = _get_pol_load_list(hd.pols, pol_mode=pol_mode)
+
+    # initialize gains to 1s, gain flags to True, and chisq to 0s
+    rv = {}  # dictionary of return values
+    rv['g_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
+    rv['gf_firstcal'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
+    rv['g_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=np.complex64) for ant in ants}
+    rv['gf_omnical'] = {ant: np.ones((nTimes, nFreqs), dtype=bool) for ant in ants}
+    rv['chisq'] = {antpol: np.zeros((nTimes, nFreqs), dtype=np.float32) for antpol in antpols}
+    rv['chisq_per_ant'] = {ant: np.zeros((nTimes, nFreqs), dtype=np.float32) for ant in ants}
+
+#    get reds and then intitialize omnical visibility solutions to all 1s and all flagged
+    rd = get_reds({ant: hd.antpos[ant] for ant in ant_nums}, bl_error_tol=bl_error_tol,
+                        pol_mode=pol_mode, pols=set([pol for pols in pol_load_list for pol in pols]))
+    
+    clustered_baseline_groups = []
+    
+    k_values = np.arange(2,Number_of_clusters+1)
+    k_values_used = []
+    
+    for z in range(red_groups_index):
+        k_v = random.choice(k_values)
+        clustered_baseline_groups.append(get_custom_reds2(data_file,k_v,z))
+        k_values_used.append(k_v)
+
+
+    ## Replaces the original redundand groups by its clustered subgroups.
+    all_reds = []
+    #appends groups that are clustered
+    for k1 in range(len(clustered_baseline_groups)):
+        for k2 in range(len(clustered_baseline_groups[k1])):
+            all_reds.append(clustered_baseline_groups[k1][k2])
+    
+    # Appends the un-clustered groups
+    for k3 in range(len(clustered_baseline_groups),len(rd)):
+        all_reds.append(rd[k3])
+    
+
+    return all_reds, k_values_used
+
+
+
+
+
+
+
+
+####################################################################################################################################################################################################################################################################################################################################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def redcal_iteration_custom2(hd, customized_groups,min_bl_cut,max_bl_cut, nInt_to_load=None, pol_mode='2pol', bl_error_tol=1.0, ex_ants=[],
                      solar_horizon=0.0, flag_nchan_low=0, flag_nchan_high=0, fc_conv_crit=1e-6,
                      fc_maxiter=50, oc_conv_crit=1e-10, oc_maxiter=500, check_every=10, check_after=50,
@@ -693,10 +880,6 @@ def redcal_run_custom(input_data,c_data,k_value,N_red_clusters,min_bl_cut, max_b
                               verbose=verbose, add_to_history=add_to_history + '\n' + high_z_ant_hist)
 
     return cal
-
-
-
-
 
 
 
