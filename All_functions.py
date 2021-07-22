@@ -398,6 +398,9 @@ def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nIn
         
     """ Combines the clustered baselines groups with the original get_reds groups and also changes their polarisation
         of the groups from 'nn' to 'ee'.
+        - This function involves clustering the earlier specified redundant baseline groups(RBGs) into more subgroups and 
+        the later RBGs into fewer subgroups. As an example for the 60 specified RBGs, the groups could be split into four,
+        0-15 will use k=6, 15-30 will use k=5, 30-45 will suse k=4 and 45-60 will use k=3. 
 
     Returns:
         reds: list of lists of redundant baseline tuples, e.g. (ind1,ind2,pol).
@@ -454,7 +457,7 @@ def custom_reds_option2(hd, data_file, Number_of_clusters, red_groups_index, nIn
     
     for rbg in range(len(RBG_range)-1):
         for z in range(RBG_range[rbg],RBG_range[rbg+1]):
-            print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
+#             print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
             clustered_baseline_groups.append(get_custom_reds2(data_file,k_v_list[rbg] ,z))
 
 
