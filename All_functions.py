@@ -457,7 +457,7 @@ def custom_reds_option2(hd, data_file, k_value_start, Number_of_clusters, red_gr
     
     for rbg in range(len(RBG_range)-1):
         for z in range(RBG_range[rbg],RBG_range[rbg+1]):
-            print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
+#             print(k_v_list[rbg],'{},{}'.format(RBG_range[rbg],RBG_range[rbg+1]))
             clustered_baseline_groups.append(get_custom_reds2(data_file,k_v_list[rbg] ,z))
 
 
@@ -554,25 +554,7 @@ def custom_reds_option3(hd, data_file, k_value_start, Number_of_clusters, red_gr
 
 
 
-
-
-
-
 ####################################################################################################################################################################################################################################################################################################################################################################################################################
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -1440,6 +1422,127 @@ def get_statistics_gains(true_file, calib_data,time_sample):
         #print('{} = '.format( true_data.baseline_to_antnums(rbg[i])), dh, df, dtw, pcm, cl, area)
     stat_values = np.array(stat_values)   
     return stat_values
+
+
+
+
+
+##################################################################################################################################################################################################     PLOTS   ###################################################3
+
+def bar_plot_124(data_array, plot_tittle):
+
+    cal_vulues = data_array.T
+
+    # Numbers of pairs of bars you want
+    N = len(data_array)
+
+    # Data on X-axis
+
+    legend_label = ['2','3','4','5','6']
+    labels = ['15', '25', '30', '35', '40','50','60']
+
+    # Position of bars on x-axis
+    ind = np.arange(N)
+    
+    # Width of a bar 
+    width = 0.18
+
+    # Plotting
+    # Figure size
+    plt.figure(figsize=(14,8))
+
+    for i in range(len(cal_vulues)):
+        value = cal_vulues[i]
+        plt.barh(ind + (i+0.9)*width, value , width, label= legend_label[i], alpha = 0.8 )
+
+    plt.xlabel('Percentage change')
+    plt.title('Percentage change per Non_red Case ({})'.format(plot_tittle))
+    plt.ylabel("Number of redundant baseline groups")
+    plt.axvline(color='k', alpha=0.5)
+    plt.hlines([1.03,2.03,3.03,4.03,5.03,6.03],cal_vulues.min() , cal_vulues.max(), color='grey',linestyles='--', linewidth=1)
+
+    x_ticks = labels
+    plt.yticks(ind + width+0.25, x_ticks)
+
+    # Finding the best position for legends and putting it
+    plt.legend(loc='best',title="K_values")
+    plt.show()
+
+
+
+
+def bar_plot_124_annotate(data_array, plot_tittle):
+
+    cal_vulues = data_array.T
+
+    # Numbers of pairs of bars you want
+    N = len(data_array)
+
+    # Data on X-axis
+
+    legend_label = ['2','3','4','5','6']
+    labels = ['15', '25', '30', '35', '40','50','60']
+
+    # Position of bars on x-axis
+    ind = np.arange(N)
+    
+    # Width of a bar 
+    width = 0.18
+
+    # Plotting
+    # Figure size
+    plt.figure(figsize=(14,8))
+
+    rects_list = []
+    for i in range(len(cal_vulues)):
+        value = cal_vulues[i]
+        ax = plt.barh(ind + (i+0.9)*width, value , width, label= legend_label[i], alpha = 0.8 )
+        rects_list.append(ax.patches)
+    plt.xlabel('Percentage change')
+    plt.title('Percentage change per Non_red Case ({})'.format(plot_tittle))
+    plt.ylabel("Number of redundant baseline groups")
+    plt.axvline(color='k', alpha=0.5)
+    plt.hlines([1.03,2.03,3.03,4.03,5.03,6.03],cal_vulues.min() , cal_vulues.max(), color='grey',linestyles='--', linewidth=1)
+
+    x_ticks = labels
+    plt.yticks(ind + width+0.25, x_ticks)
+
+    # Finding the best position for legends and putting it
+    plt.legend(loc='best',title="K_values")
+
+    # For each bar: Place a label
+    for k in range(len(rects_list)):
+        for rect in rects_list[k]:
+            # Get X and Y placement of label from rect.
+            x_value = rect.get_width()
+            y_value = rect.get_y() + rect.get_height() / 2
+
+            # Number of points between bar and label. Change to your liking.
+            space = 5
+            # Vertical alignment for positive values
+            ha = 'left'
+
+            # If value of bar is negative: Place label left of bar
+            if x_value < 0:
+                # Invert space to place label to the left
+                space *= -1
+                # Horizontally align label at right
+                ha = 'right'
+
+            # Use X value as label and format number with one decimal place
+            label = "{:.1f}%".format(x_value)
+
+            # Create annotation
+            plt.annotate(
+                label,                      # Use `label` as label
+                (x_value, y_value),         # Place label at end of the bar
+                xytext=(space, 0),          # Horizontally shift label by `space`
+                textcoords="offset points", # Interpret `xytext` as offset in points
+                va='center',                # Vertically center label
+                ha=ha)                      # Horizontally align label differently for
+                                            # positive and negative values.
+    plt.show()
+
 
 
 
